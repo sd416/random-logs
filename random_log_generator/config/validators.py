@@ -89,6 +89,11 @@ def validate_config(config):
     # Validate list values
     validate_list(config_params, 'custom_app_names')
 
+    # Validate optional new feature-flag config blocks.
+    _validate_optional_log_format(config_params)
+    _validate_optional_sinks(config_params)
+    _validate_optional_prometheus(config_params)
+
     # Validate root-level keys if they exist
     if 'log_levels' in config and config['log_levels'] is not None:
         validate_list(config, 'log_levels')
@@ -233,3 +238,84 @@ def validate_logging_level(config, key):
         error_msg = f"Configuration parameter '{key}' must be one of {valid_levels}, got '{value}'"
         logging.error(error_msg)
         raise ValueError(error_msg)
+
+
+def _validate_optional_log_format(config_params):
+    """Validate the optional ``log_format`` and ``formatter_options`` keys."""
+    # Imported lazily to avoid a config<->formatters import cycle at load time.
+    from random_log_generator.formatters.factory import SUPPORTED_FORMATS
+
+    log_format = config_params.get('log_format')
+    if log_format is not None:
+        if not isinstance(log_format, str):
+            raise ValueError(
+                f"Configuration parameter 'log_format' must be a string, got {type(log_format).__name__}"
+            )
+        if log_format.lower() not in SUPPORTED_FORMATS:
+            raise ValueError(
+                f"Configuration parameter 'log_format' must be one of {SUPPORTED_FORMATS}, got '{log_format}'"
+            )
+
+    formatter_options = config_params.get('formatter_options')
+    if formatter_options is not None and not isinstance(formatter_options, dict):
+        raise ValueError(
+            f"Configuration parameter 'formatter_options' must be a dict, got {type(formatter_options).__name__}"
+        )
+
+
+def _validate_optional_sinks(config_params):
+    """Validate the optional ``sinks`` configuration list."""
+    from random_log_generator.output.factory import SUPPORTED_SINK_TYPES
+
+    sinks = config_params.get('sinks')
+    if sinks is None:
+        return
+    if not isinstance(sinks, list) or not sinks:
+        raise ValueError("'sinks' must be a non-empty list of sink specifications")
+
+    for index, spec in enumerate(sinks):
+        if not isinstance(spec, dict):
+            raise ValueError(
+                f"sinks[{index}] must be a mapping, got {type(spec).__name__}"
+            )
+        sink_type = spec.get('type')
+        if not isinstance(sink_type, str) or sink_type.lower() not in SUPPORTED_SINK_TYPES:
+            raise ValueError(
+                f"sinks[{index}].type must be one of {SUPPORTED_SINK_TYPES}, got {sink_type!r}"
+            )
+        sink_type = sink_type.lower()
+
+        if sink_type == 'http' and not spec.get('url'):
+            raise ValueError(f"sinks[{index}] (http) requires a 'url' field")
+        if sink_type in ('socket', 'syslog'):
+            if not spec.get('host'):
+                raise ValueError(f"sinks[{index}] ({sink_type}) requires a 'host' field")
+            if sink_type == 'socket' and 'port' not in spec:
+                raise ValueError(f"sinks[{index}] (socket) requires a 'port' field")
+
+    require_all = config_params.get('sinks_require_all_success')
+    if require_all is not None and not isinstance(require_all, bool):
+        raise ValueError(
+            "'sinks_require_all_success' must be a boolean if provided"
+        )
+
+
+def _validate_optional_prometheus(config_params):
+    """Validate the optional ``prometheus`` configuration block."""
+    prom = config_params.get('prometheus')
+    if prom is None:
+        return
+    if not isinstance(prom, dict):
+        raise ValueError(
+            f"Configuration parameter 'prometheus' must be a dict, got {type(prom).__name__}"
+        )
+    if 'enabled' in prom and not isinstance(prom['enabled'], bool):
+        raise ValueError("'prometheus.enabled' must be a boolean")
+    if 'port' in prom:
+        port = prom['port']
+        if not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ValueError("'prometheus.port' must be an int between 1 and 65535")
+    if 'host' in prom and not isinstance(prom['host'], str):
+        raise ValueError("'prometheus.host' must be a string")
+    if 'labels' in prom and prom['labels'] is not None and not isinstance(prom['labels'], dict):
+        raise ValueError("'prometheus.labels' must be a dict if provided")

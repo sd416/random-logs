@@ -16,10 +16,12 @@ from random_log_generator.utils.user_agents import (
     initialize_user_agent_pool,
     generate_random_user_agent
 )
-from random_log_generator.formatters.http import HTTPFormatter
-from random_log_generator.formatters.custom import CustomFormatter
+from random_log_generator.formatters.factory import (
+    create_formatter,
+)
 from random_log_generator.core.rate_limiter import TokenBucket
 from random_log_generator.metrics.collector import Metrics
+from random_log_generator.output.factory import create_output_handler
 from random_log_generator.output.file_output import FileOutputHandler # Moved from main
 from random_log_generator.output.console_output import ConsoleOutputHandler # Moved from main
 from random_log_generator.core.strategies import ( # Moved from main
@@ -29,25 +31,13 @@ from random_log_generator.core.strategies import ( # Moved from main
 
 
 def initialize_formatters(config_params, http_status_codes, log_levels):
+    """Initialize the appropriate formatter based on configuration.
+
+    Delegates to :func:`random_log_generator.formatters.factory.create_formatter`
+    so all format selection logic lives in one place. Kept as a thin wrapper
+    for backwards compatibility with existing tests/imports.
     """
-    Initialize the appropriate formatter based on configuration.
-    
-    Args:
-        config_params (dict): Configuration parameters (CONFIG block).
-        http_status_codes (dict): Dictionary of HTTP status codes and messages.
-        log_levels (list): List of log levels.
-        
-    Returns:
-        tuple: A tuple containing the formatter and log levels.
-    """
-    if config_params['http_format_logs']:
-        formatter = HTTPFormatter(http_status_codes)
-    else:
-        formatter = CustomFormatter(
-            config_params['custom_log_format'],
-            config_params['custom_app_names']
-        )
-    
+    formatter = create_formatter(config_params, http_status_codes, log_levels)
     return formatter, log_levels
 
 
@@ -248,18 +238,14 @@ def _initialize_generator_components(full_config, metrics_instance_param):
     formatter_obj, final_log_levels = initialize_formatters(config_params, http_status_codes_cfg, log_levels_cfg)
 
     output_handler_obj = None
-    if config_params['write_to_file']:
-        try:
-            output_handler_obj = FileOutputHandler(
-                config_params['log_file_path'],
-                config_params['log_rotation_enabled'],
-                config_params['log_rotation_size']
-            )
-        except (IOError, OSError) as e:
-            logging.error(f"Error initializing file output handler: {e}")
-            raise RuntimeError(f"Failed to initialize file output handler: {e}") from e 
-    else:
-        output_handler_obj = ConsoleOutputHandler()
+    try:
+        output_handler_obj = create_output_handler(config_params)
+    except (IOError, OSError) as e:
+        logging.error(f"Error initializing output handler: {e}")
+        raise RuntimeError(f"Failed to initialize output handler: {e}") from e
+    except (ValueError, KeyError) as e:
+        logging.error(f"Invalid output handler configuration: {e}")
+        raise RuntimeError(f"Invalid output handler configuration: {e}") from e
 
     log_line_size_est = config_params.get('log_line_size_estimate', 100)
 
@@ -286,6 +272,7 @@ def main(config, metrics_instance=None):
     """
     output_handler = None # Ensure output_handler is defined for the finally block
     metrics_collector_ref = None # Ensure defined for finally/interrupt handler
+    prometheus_server = None  # Optional metrics endpoint
 
     try:
         (config_params, formatter, log_levels, output_handler_initialized, 
@@ -294,6 +281,22 @@ def main(config, metrics_instance=None):
         metrics_collector_ref = metrics_collector   # Assign to outer scope var
     except RuntimeError: 
         return 1 
+
+    # Optionally start the Prometheus metrics endpoint.
+    prom_cfg = config_params.get('prometheus') or {}
+    if prom_cfg.get('enabled'):
+        try:
+            from random_log_generator.metrics.prometheus import PrometheusMetricsServer
+            prometheus_server = PrometheusMetricsServer(
+                metrics_collector_ref,
+                host=prom_cfg.get('host', '0.0.0.0'),
+                port=prom_cfg.get('port', 9090),
+                extra_labels=prom_cfg.get('labels'),
+            )
+            prometheus_server.start()
+        except Exception as exc:  # pragma: no cover - defensive
+            logging.error("Failed to start Prometheus metrics server: %s", exc)
+            prometheus_server = None
 
     start_time = time.time()
     iteration = 0
@@ -308,14 +311,16 @@ def main(config, metrics_instance=None):
     def handle_interrupt(signal_received, frame):
         # This function will be a closure, accessing 'interrupted_status', 
         # 'metrics_collector_ref', and 'output_handler' from the 'main' scope.
-        if not interrupted_status[0]: 
+        if not interrupted_status[0]:
             interrupted_status[0] = True
             logging.info("Interrupt received, shutting down...")
             if metrics_collector_ref: 
                 logging.info(f"Final metrics: {metrics_collector_ref.get_stats()}")
             if output_handler: 
                 output_handler.close()
-            exit(0) 
+            if prometheus_server is not None:
+                prometheus_server.stop()
+            exit(0)
 
     _setup_signal_handlers(handle_interrupt)
     
@@ -380,5 +385,7 @@ def main(config, metrics_instance=None):
             logging.info(f"Final metrics: {metrics_collector_ref.get_stats()}")
         if output_handler: # Ensure output_handler was initialized
             output_handler.close()
+        if prometheus_server is not None:
+            prometheus_server.stop()
     
     return 0 if not interrupted_status[0] else 0 # Return 0 on normal completion or graceful interrupt

@@ -21,6 +21,43 @@ CONFIG:
   custom_log_format: "${timestamp}, ${log_level}, ${message}"  # Custom format string for logs
   logging_level: 'INFO'      # Logging level for the script ('DEBUG', 'INFO', 'WARNING', 'ERROR')
 
+  # ---------------------------------------------------------------------------
+  # Optional feature flags (all backwards compatible).
+  # ---------------------------------------------------------------------------
+  # log_format: 'http'            # http | custom | json | ndjson | syslog |
+  #                               # syslog5424 | syslog3164 | logfmt | clf | combined
+  # formatter_options:            # per-format options
+  #   extra_fields:               # JSON / logfmt: static fields merged into every record
+  #     env: prod
+  #   facility: 1                 # syslog: facility code (0-23)
+  #
+  # sinks:                        # If set, replaces write_to_file/console.
+  #   - type: file
+  #     path: 'logs.txt'
+  #     rotation_enabled: true
+  #     rotation_size: 50
+  #   - type: http                # generic | loki | splunk_hec
+  #     url: 'https://example.com/ingest'
+  #     mode: 'loki'
+  #     auth_token: '...'
+  #     loki_labels: {job: 'rlg', env: 'prod'}
+  #   - type: syslog
+  #     host: 'syslog.example.com'
+  #     port: 514
+  #     protocol: 'udp'           # udp | tcp
+  #     framing: 'octet-counting' # tcp only — 'octet-counting' (RFC 6587) or 'non-transparent'
+  #   - type: socket
+  #     host: '127.0.0.1'
+  #     port: 5170
+  #     protocol: 'tcp'
+  # sinks_require_all_success: true
+  #
+  # prometheus:                   # exposes /metrics on the configured host:port
+  #   enabled: false
+  #   host: '0.0.0.0'
+  #   port: 9090
+  #   labels: {job: 'rlg'}
+
 
 # Log levels to use in the logs
 log_levels:

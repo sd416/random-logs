@@ -8,12 +8,12 @@ A Python package for generating realistic log entries with configurable rates an
 
 - Generates realistic log messages with various log levels (`DEBUG`, `INFO`, `WARNING`, `ERROR`).
 - Configurable log generation rates and durations.
-- Supports HTTP response-like log format.
-- Option to write logs to a specified file or print to the console.
+- Multiple output formats: HTTP, **JSON / NDJSON**, **Syslog (RFC 5424 & 3164)**, **Logfmt**, **CLF**, **Combined**, or a fully custom template.
+- Multiple output sinks: file, console, **HTTP/Webhook (generic, Grafana Loki, Splunk HEC)**, **TCP/UDP socket**, **remote syslog (UDP/TCP, RFC 6587 framing)** — fan out to many sinks at once.
+- Optional **Prometheus `/metrics` endpoint** for scraping log generation stats.
 - Random rate changes and early exit probabilities for simulating real-world scenarios.
 - Generates random user agents for more realistic HTTP logs.
 - Collects metrics such as total logs generated, total bytes written, and average log generation rate.
-- Supports custom log formats.
 - Log rotation support.
 
 ## Installation
@@ -160,6 +160,93 @@ user_agent_systems:
 ### Environment Variables
 
 You can also override configuration values using environment variables. Environment variables should be prefixed with `LOG_GEN_` and be in uppercase. For sd416, `LOG_GEN_DURATION_NORMAL` would override `duration_normal`.
+
+### Output Formats (`log_format`)
+
+Set `log_format` inside the `CONFIG` block to one of:
+
+| `log_format`              | Description                                            |
+|---------------------------|--------------------------------------------------------|
+| `http` (default)          | HTTP-style log line (legacy `http_format_logs: true`)  |
+| `custom`                  | User-supplied template via `custom_log_format`         |
+| `json` / `ndjson`         | Structured JSON record per line (NDJSON)               |
+| `syslog` / `syslog5424`   | RFC 5424 syslog                                        |
+| `syslog3164`              | Legacy BSD syslog (RFC 3164)                           |
+| `logfmt`                  | `key=value` style logs                                 |
+| `clf`                     | Apache/Nginx Common Log Format                         |
+| `combined`                | Apache/Nginx Combined Log Format                       |
+
+Per-format options live under `formatter_options`. Example:
+
+```yaml
+CONFIG:
+  log_format: json
+  formatter_options:
+    extra_fields:
+      service: payments
+      env: prod
+    sort_keys: false
+```
+
+### Output Sinks
+
+By default the generator writes to a single file or the console (preserving
+the existing `write_to_file` behaviour). For richer pipelines, declare a list
+of sinks under `CONFIG.sinks` — each batch is fanned out to every sink.
+
+```yaml
+CONFIG:
+  sinks:
+    - type: file
+      path: '/var/log/rlg.ndjson'
+      rotation_enabled: true
+      rotation_size: 100
+
+    - type: http              # generic JSON POST, Loki, or Splunk HEC
+      url: 'https://logs-prod.grafana.net/loki/api/v1/push'
+      mode: loki              # 'generic' | 'loki' | 'splunk_hec'
+      auth_token: '${LOKI_TOKEN}'
+      loki_labels:
+        job: 'rlg'
+        env: 'prod'
+      max_retries: 3
+      gzip_enabled: true
+
+    - type: syslog            # remote syslog
+      host: 'syslog.example.com'
+      port: 514
+      protocol: 'udp'         # 'udp' or 'tcp'
+      framing: 'octet-counting'   # tcp only — RFC 6587
+
+    - type: socket            # raw TCP/UDP for Fluent Bit / Vector / Logstash
+      host: '127.0.0.1'
+      port: 5170
+      protocol: 'tcp'
+
+  sinks_require_all_success: true   # set to false for best-effort fan-out
+```
+
+### Prometheus Metrics Endpoint
+
+```yaml
+CONFIG:
+  prometheus:
+    enabled: true
+    host: '0.0.0.0'
+    port: 9090
+    labels:
+      job: 'rlg'
+      env: 'prod'
+```
+
+Scrape with:
+
+```bash
+curl http://localhost:9090/metrics
+```
+
+Exposed series: `rlg_logs_total`, `rlg_bytes_total`, `rlg_uptime_seconds`,
+and `rlg_rate_mb_s{kind="avg|max|min"}`.
 
 ## Usage
 
